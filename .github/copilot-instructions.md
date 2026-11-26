@@ -18,4 +18,4 @@ Project context Copilot should apply to every session in this repository.
 
 - Persist bookmarks in browser `localStorage`, including each bookmark's original URL and locally generated short slug.
 - Use Astro's `client:load` directive for interactive framework components that need hydration immediately on page load. Client directives apply to framework components, not `.astro` components.
-- Put browser-only behavior in `.astro` component `<script>` blocks, which run in the browser without a hydration directive. Never access browser APIs from Astro frontmatter or other code that runs during the static build.
+- Keep browser-only behavior, including `localStorage`, `window`, and `navigator` access, inside `.astro` component `<script>` blocks, which run in the browser without a hydration directive. Never access browser APIs from Astro frontmatter or other code that runs during the static build.
