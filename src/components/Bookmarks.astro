@@ -1,45 +1,43 @@
----
-// Bookmark behavior runs in the client-side script below so the static build
-// never accesses browser APIs.
----
-<form id="add-bookmark">
-  <div class="field">
-    <label for="url">Link to save</label>
-    <input
-      id="url"
-      name="url"
-      type="url"
-      inputmode="url"
-      autocomplete="off"
-      spellcheck="false"
-      placeholder="https://example.com"
-      required
-    />
+<section class="bookmark-card" aria-label="Bookmark manager">
+  <form id="add-bookmark">
+    <div class="field">
+      <label for="url">Link to save</label>
+      <input
+        id="url"
+        name="url"
+        type="text"
+        inputmode="url"
+        autocomplete="url"
+        spellcheck="false"
+        placeholder="example.com or https://example.com"
+        required
+      />
+    </div>
+    <button type="submit">Add bookmark</button>
+  </form>
+
+  <p class="hint">Paste a website address with or without <code>https://</code>. We’ll tidy it up and make a short slug.</p>
+  <p id="bookmark-status" role="status" aria-live="polite"></p>
+
+  <p id="empty-state" class="empty">No bookmarks yet — add your first link above.</p>
+
+  <div id="list-header" hidden>
+    <h2 class="list-title">Saved bookmarks</h2>
+    <button id="clear-all" type="button" class="clear">Clear all</button>
   </div>
-  <button type="submit">Add bookmark</button>
-</form>
 
-<p class="hint">Paste a URL and select <strong>Add bookmark</strong> to generate its short <code>mona-</code> slug.</p>
-<p id="bookmark-status" role="status" aria-live="polite"></p>
-
-<p id="empty-state" class="empty">No bookmarks yet — add your first link above.</p>
-
-<div id="list-header" hidden>
-  <h2 class="list-title">Saved bookmarks</h2>
-  <button id="clear-all" type="button" class="clear">Clear all</button>
-</div>
-
-<ul id="bookmark-list" aria-label="Saved bookmarks" aria-live="polite">
-  <!-- Bookmarks render here in the browser. -->
-</ul>
+  <ul id="bookmark-list" aria-label="Saved bookmarks" aria-live="polite"></ul>
+</section>
 
 <script>
-  interface Bookmark {
-    url: string;
-    slug: string;
-  }
+  import {
+    BOOKMARKS_STORAGE_KEY,
+    formatBookmark,
+    loadBookmarks,
+    normalizeUrl,
+    type Bookmark,
+  } from '../lib/bookmarks.ts';
 
-  const storageKey = 'mona-bookmarks';
   const form = document.querySelector<HTMLFormElement>('#add-bookmark');
   const urlInput = document.querySelector<HTMLInputElement>('#url');
   const list = document.querySelector<HTMLUListElement>('#bookmark-list');
@@ -51,29 +49,22 @@
   if (form && urlInput && list && emptyState && listHeader && clearAll && status) {
     let bookmarks: Bookmark[] = [];
 
-    function isBookmark(value: unknown): value is Bookmark {
-      if (typeof value !== 'object' || value === null) return false;
-      const candidate = value as Record<string, unknown>;
-      if (typeof candidate.url !== 'string'
-        || typeof candidate.slug !== 'string'
-        || !candidate.slug.startsWith('mona-')) {
-        return false;
-      }
+    function createSlug(usedSlugs: Set<string>): string {
+      const alphabet = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+      let slug: string;
 
-      try {
-        const parsedUrl = new URL(candidate.url);
-        return parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:';
-      } catch {
-        return false;
-      }
-    }
+      do {
+        let suffix = '';
+        while (suffix.length < 4) {
+          for (const byte of crypto.getRandomValues(new Uint8Array(8))) {
+            if (byte < 248) suffix += alphabet[byte % alphabet.length];
+            if (suffix.length === 4) break;
+          }
+        }
+        slug = `mona-${suffix}`;
+      } while (usedSlugs.has(slug));
 
-    function createSlug(): string {
-      const randomValue = crypto.getRandomValues(new Uint32Array(1))[0];
-      const suffix = Math.floor((randomValue / 0x100000000) * 36 ** 6)
-        .toString(36)
-        .padStart(6, '0');
-      return `mona-${suffix}`;
+      return slug;
     }
 
     function renderBookmarks(): void {
@@ -85,6 +76,9 @@
         const row = document.createElement('li');
         row.className = 'bookmark';
 
+        const line = document.createElement('span');
+        line.className = 'bookmark-line';
+
         const link = document.createElement('a');
         link.className = 'url';
         link.href = bookmark.url;
@@ -95,6 +89,8 @@
         const slug = document.createElement('span');
         slug.className = 'slug';
         slug.textContent = bookmark.slug;
+
+        line.append(link, document.createTextNode(' :: '), slug);
 
         const copy = document.createElement('button');
         copy.className = 'copy';
@@ -110,7 +106,7 @@
           }
         });
 
-        row.append(link, slug, copy);
+        row.append(line, copy);
         list.append(row);
       }
     }
@@ -119,31 +115,27 @@
       event.preventDefault();
       status.textContent = '';
 
-      const originalUrl = urlInput.value.trim();
-      let parsedUrl: URL;
+      let url: string;
       try {
-        parsedUrl = new URL(originalUrl);
+        url = normalizeUrl(urlInput.value);
       } catch {
-        status.textContent = 'Enter a valid web URL, such as https://example.com.';
+        status.textContent = 'Enter a valid HTTP or HTTPS web address.';
         urlInput.focus();
         return;
       }
 
-      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-        status.textContent = 'Only HTTP and HTTPS links can be saved.';
-        urlInput.focus();
+      let slug: string;
+      try {
+        slug = createSlug(new Set(bookmarks.map((bookmark) => bookmark.slug)));
+      } catch {
+        status.textContent = 'Could not generate a bookmark slug. Please try again.';
         return;
       }
 
-      let slug = createSlug();
-      while (bookmarks.some((bookmark) => bookmark.slug === slug)) {
-        slug = createSlug();
-      }
-
-      const bookmark = { url: originalUrl, slug };
+      const bookmark = { url, slug };
       const updatedBookmarks = [...bookmarks, bookmark];
       try {
-        localStorage.setItem(storageKey, JSON.stringify(updatedBookmarks));
+        localStorage.setItem(BOOKMARKS_STORAGE_KEY, JSON.stringify(updatedBookmarks));
       } catch {
         status.textContent = 'Could not save this bookmark in browser storage.';
         return;
@@ -152,7 +144,7 @@
       bookmarks = updatedBookmarks;
       renderBookmarks();
       urlInput.value = '';
-      status.textContent = `Saved with slug ${slug}.`;
+      status.textContent = `Saved ${formatBookmark(bookmark)}.`;
       urlInput.focus();
     });
 
@@ -160,7 +152,7 @@
       if (!window.confirm('Clear all saved bookmarks?')) return;
 
       try {
-        localStorage.removeItem(storageKey);
+        localStorage.removeItem(BOOKMARKS_STORAGE_KEY);
       } catch {
         status.textContent = 'Could not clear bookmarks from browser storage.';
         return;
@@ -172,18 +164,171 @@
     });
 
     try {
-      const saved = localStorage.getItem(storageKey);
-      if (saved !== null) {
-        const parsed: unknown = JSON.parse(saved);
-        if (!Array.isArray(parsed)) throw new Error('Stored bookmarks must be an array.');
-        const restored = parsed.filter(isBookmark);
-        if (restored.length !== parsed.length) throw new Error('Stored bookmarks are invalid.');
-        bookmarks = restored;
-      }
+      bookmarks = loadBookmarks(localStorage.getItem(BOOKMARKS_STORAGE_KEY));
     } catch {
-      status.textContent = 'Could not load saved bookmarks from browser storage.';
+      status.textContent = 'Could not access saved bookmarks in browser storage.';
     }
 
     renderBookmarks();
   }
 </script>
+
+<style>
+  .bookmark-card {
+    padding: clamp(1.25rem, 4vw, 2rem);
+    border: 1px solid var(--border);
+    border-radius: 1.1rem;
+    background: color-mix(in srgb, Canvas 94%, var(--accent) 6%);
+    box-shadow: 0 1rem 2.5rem color-mix(in srgb, currentColor 8%, transparent);
+  }
+
+  form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 0.75rem;
+    margin: 0;
+  }
+
+  .field {
+    display: grid;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+
+  label {
+    font-size: 0.9rem;
+    font-weight: 700;
+  }
+
+  input {
+    min-height: 3rem;
+    padding: 0.7rem 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, Canvas 96%, currentColor 4%);
+    color: inherit;
+    font: inherit;
+  }
+
+  button {
+    min-height: 3rem;
+    transition: transform 120ms ease, filter 120ms ease;
+  }
+
+  button:hover {
+    transform: translateY(-1px);
+  }
+
+  .hint {
+    margin: 0.75rem 0 1rem;
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+
+  #bookmark-status {
+    min-height: 1.5em;
+    margin: 0 0 0.75rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  #list-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin: 1.25rem 0 0.65rem;
+  }
+
+  .list-title {
+    margin: 0;
+    font-size: 1rem;
+    font-family: var(--font-head);
+  }
+
+  .clear,
+  .copy {
+    min-height: auto;
+    padding: 0.4rem 0.7rem;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+
+  .clear:hover,
+  .copy:hover {
+    border-color: var(--accent);
+    filter: none;
+  }
+
+  ul {
+    display: grid;
+    gap: 0.65rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  li.bookmark {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: 0.85rem;
+    background: color-mix(in srgb, Canvas 97%, currentColor 3%);
+  }
+
+  .bookmark-line {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    line-height: 1.7;
+  }
+
+  .bookmark .url {
+    color: var(--accent);
+    font-weight: 600;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.15em;
+  }
+
+  .slug {
+    color: var(--muted);
+    font-family: var(--font-body);
+    font-size: 0.9em;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .empty {
+    margin: 0.75rem 0 0;
+    padding: 1.15rem;
+    border: 1px dashed var(--border);
+    border-radius: 0.85rem;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  @media (max-width: 34rem) {
+    form {
+      grid-template-columns: 1fr;
+    }
+
+    form > button {
+      width: 100%;
+    }
+
+    li.bookmark {
+      align-items: flex-start;
+    }
+
+    .copy {
+      flex: 0 0 auto;
+      margin-top: 0.2rem;
+    }
+  }
+</style>
